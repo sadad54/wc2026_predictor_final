@@ -1,0 +1,98 @@
+project:
+  name: "worldcup-2026-predictor"
+  version: "1.0.0"
+  description: "ML pipeline for 2026 FIFA World Cup match and tournament prediction"
+  seed: 42
+
+paths:
+  raw_data:       "data/raw"
+  processed_data: "data/processed"
+  external_data:  "data/external"
+  models:         "models/saved"
+  metrics:        "models/metrics"
+  logs:           "logs"
+  notebooks:      "notebooks"
+
+data:
+  kaggle:
+    results_dataset:  "martj42/international-football-results-from-1872-to-2017"
+    rankings_dataset: "cashncarry/fifaworldranking"
+  date_filter:
+    start_year: 1993          # Pre-1993 data is too sparse for modern football
+  match_type_weights:         # How much each match type counts toward team strength
+    world_cup:           1.00
+    world_cup_qualifier: 0.85
+    continental:         0.85
+    friendly:            0.50
+  tournament:
+    year: 2026
+    n_teams: 48
+    n_groups: 12
+    teams_per_group: 4
+    third_place_qualifiers: 8  # Best 3rd-place teams that advance
+    total_matches: 104
+
+features:
+  elo:
+    initial_rating: 1500      # Starting Elo for all teams
+    home_advantage: 65        # Elo points added to home team expected score
+    k_factors:                # How much each match type shifts Elo ratings
+      world_cup_final:    60
+      world_cup:          50
+      world_cup_qualifier: 40
+      continental:        35
+      friendly:           20
+    decay:
+      enabled: true
+      half_life_days: 1095   # Matches ~3 years old count half as much
+  form:
+    window_matches: 10        # Look at last N matches for form calculation
+    decay_factor: 0.85        # Each match is 85% as important as the next one
+
+models:
+  random_state: 42
+  cv_folds: 5
+  test_tournaments:           # Walk-forward validation on these past World Cups
+    - 2010
+    - 2014
+    - 2018
+    - 2022
+
+  xgboost:
+    n_estimators: 300
+    max_depth: 4
+    learning_rate: 0.05
+    subsample: 0.8
+    colsample_bytree: 0.8
+    min_child_weight: 5
+    gamma: 0.1
+    reg_alpha: 0.1
+    reg_lambda: 1.0
+
+  random_forest:
+    n_estimators: 200
+    max_depth: 6
+    min_samples_split: 10
+    min_samples_leaf: 5
+    max_features: "sqrt"
+
+  logistic_regression:
+    C: 1.0
+    max_iter: 1000
+    solver: "lbfgs"
+    multi_class: "multinomial"
+
+  dixon_coles:
+    time_decay_xi: 0.0018     # Controls how quickly older matches lose weight
+
+simulation:
+  n_simulations: 10000
+  random_state: 42
+  knockout:
+    extra_time_goal_rate: 0.75   # Goals per 30 mins of ET (relative to 90 min rate)
+    penalty_base_success: 0.753  # Historical penalty success rate
+logging:
+  level: "INFO"
+  format: "{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} - {message}"
+  rotation: "10 MB"
+  retention: "1 week"

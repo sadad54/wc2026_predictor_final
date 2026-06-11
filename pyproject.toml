@@ -1,0 +1,36 @@
+# pyproject.toml
+# Modern Python project definition (PEP 517/518/621)
+# Run `pip install -e .` once to make `src` importable from anywhere.
+
+[build-system]
+requires      = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name        = "worldcup-predictor"
+version     = "1.0.0"
+description = "2026 FIFA World Cup Match Prediction Engine"
+readme      = "README.md"
+requires-python = ">=3.11"
+
+[tool.setuptools.packages.find]
+where   = ["."]
+include = ["src*"]
+
+# ─── Black (code formatter) ──────────────────────────────────────────────────
+[tool.black]
+line-length    = 88
+target-version = ["py311"]
+
+# ─── isort (import sorter) ───────────────────────────────────────────────────
+[tool.isort]
+profile     = "black"   # Makes isort's output compatible with Black
+line_length = 88
+
+# ─── pytest ──────────────────────────────────────────────────────────────────
+[tool.pytest.ini_options]
+testpaths         = ["tests"]
+python_files      = "test_*.py"
+python_classes    = "Test*"
+python_functions  = "test_*"
+addopts           = "-v --tb=short"

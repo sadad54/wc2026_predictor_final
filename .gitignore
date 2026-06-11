@@ -1,0 +1,60 @@
+# ─── Python ──────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+build/
+dist/
+
+# ─── Virtual environment ─────────────────────────────────────────────────────
+venv/
+env/
+ENV/
+.venv/
+
+# ─── Data (tracked by DVC, not Git) ──────────────────────────────────────────
+data/raw/
+data/processed/
+data/external/
+*.csv
+*.parquet
+*.feather
+*.json
+!data/**/.gitkeep
+
+# ─── Trained models ──────────────────────────────────────────────────────────
+models/saved/
+*.pkl
+*.joblib
+*.bin
+!models/**/.gitkeep
+
+# ─── Logs ────────────────────────────────────────────────────────────────────
+logs/
+*.log
+!logs/.gitkeep
+
+# ─── Secrets and environment ─────────────────────────────────────────────────
+.env
+.env.local
+*.pem
+*.key
+
+# ─── Jupyter ─────────────────────────────────────────────────────────────────
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# ─── DVC ─────────────────────────────────────────────────────────────────────
+/tmp
+.dvc/cache/
+.dvc/tmp/
+
+# ─── IDE ─────────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
