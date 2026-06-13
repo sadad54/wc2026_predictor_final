@@ -274,15 +274,33 @@ class DixonColesModel:
         """Compute (λ_home, λ_away) expected goals for one match."""
         self._check_fitted()
         n = len(self.teams_)
-        h = self.team_index_[home_team]
-        a = self.team_index_[away_team]
+        
+        # Fallback to average attack/defense for teams not in training data
+        if home_team not in self.team_index_:
+            h = None  # Will use average
+        else:
+            h = self.team_index_[home_team]
+            
+        if away_team not in self.team_index_:
+            a = None  # Will use average
+        else:
+            a = self.team_index_[away_team]
 
         attack   = self.params_[:n]
         defense  = self.params_[n : 2 * n]
         home_adv = self.params_[2 * n] if not is_neutral else 0.0
+        
+        # Use average attack/defense for unknown teams
+        avg_attack = np.mean(attack)
+        avg_defense = np.mean(defense)
+        
+        h_attack = attack[h] if h is not None else avg_attack
+        a_attack = attack[a] if a is not None else avg_attack
+        h_defense = defense[h] if h is not None else avg_defense
+        a_defense = defense[a] if a is not None else avg_defense
 
-        lambda_h = np.exp(attack[h] - defense[a] + home_adv)
-        lambda_a = np.exp(attack[a] - defense[h])
+        lambda_h = np.exp(h_attack - a_defense + home_adv)
+        lambda_a = np.exp(a_attack - h_defense)
         return float(lambda_h), float(lambda_a)
 
     def predict_scoreline_matrix(

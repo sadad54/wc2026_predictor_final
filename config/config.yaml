@@ -17,6 +17,7 @@ data:
   kaggle:
     results_dataset:  "martj42/international-football-results-from-1872-to-2017"
     rankings_dataset: "cashncarry/fifaworldranking"
+    squad_dataset:  "data/external/wc2026_groups.csv"  # ← add this line for squad data
   date_filter:
     start_year: 1993          # Pre-1993 data is too sparse for modern football
   match_type_weights:         # How much each match type counts toward team strength
@@ -31,7 +32,8 @@ data:
     teams_per_group: 4
     third_place_qualifiers: 8  # Best 3rd-place teams that advance
     total_matches: 104
-
+  players:
+    min_appearances_for_rate: 5 
 features:
   elo:
     initial_rating: 1500      # Starting Elo for all teams
@@ -50,6 +52,7 @@ features:
     decay_factor: 0.85        # Each match is 85% as important as the next one
 
 models:
+  holdout_year: 2022    # ← add this line; everything from 2022 onward = test set
   random_state: 42
   cv_folds: 5
   test_tournaments:           # Walk-forward validation on these past World Cups
