@@ -28,6 +28,10 @@ from src.utils import initialize_project, logger
 # These map to the weight keys in config['data']['match_type_weights'].
 TOURNAMENT_CLASSIFICATION: list[tuple[str, str]] = [
     # Most important first — order matters (first match wins)
+    # Check qualifiers and friendly BEFORE general World Cup to avoid false positives
+    ("qualifier",               "world_cup_qualifier"),
+    ("qualification",           "world_cup_qualifier"),
+    ("Qualifying",              "world_cup_qualifier"),
     ("FIFA World Cup",          "world_cup"),
     ("World Cup",               "world_cup"),
     ("UEFA Euro",               "continental"),
@@ -38,9 +42,6 @@ TOURNAMENT_CLASSIFICATION: list[tuple[str, str]] = [
     ("Copa América",            "continental"),
     ("Confederations Cup",      "continental"),
     ("Nations League",          "continental"),
-    ("qualifier",               "world_cup_qualifier"),
-    ("qualification",           "world_cup_qualifier"),
-    ("Qualifying",              "world_cup_qualifier"),
     ("friendly",                "friendly"),
     ("Friendly",                "friendly"),
 ]
