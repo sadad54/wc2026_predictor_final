@@ -235,7 +235,15 @@ class StackingEnsemble:
             is_neutral = bool(row.get("is_neutral", 1))
 
             if self.dc_model_.has_team(home) and self.dc_model_.has_team(away):
-                out[i] = self.dc_model_.predict_proba(home, away, is_neutral)
+                squad_attack_diff, squad_defense_diff = self._get_squad_diffs_from_row(row)
+                self._ensure_dc_squad_weights(squad_attack_diff, squad_defense_diff)
+                out[i] = self.dc_model_.predict_proba(
+                    home,
+                    away,
+                    is_neutral,
+                    squad_attack_diff=squad_attack_diff,
+                    squad_defense_diff=squad_defense_diff,
+                )
             else:
                 out[i] = _FALLBACK_PROBA
 
@@ -302,7 +310,17 @@ class StackingEnsemble:
                 "away_win": round(float(p[2]), 4),
             }
 
-        dc_p = self.dc_model_.predict_proba(home_team, away_team, is_neutral)
+        squad_attack_diff, squad_defense_diff = self._get_squad_diffs_from_row(
+            features_row
+        )
+        self._ensure_dc_squad_weights(squad_attack_diff, squad_defense_diff)
+        dc_p = self.dc_model_.predict_proba(
+            home_team,
+            away_team,
+            is_neutral,
+            squad_attack_diff=squad_attack_diff,
+            squad_defense_diff=squad_defense_diff,
+        )
         breakdown["dixon_coles"] = {
             "home_win": round(float(dc_p[0]), 4),
             "draw":     round(float(dc_p[1]), 4),
@@ -322,6 +340,27 @@ class StackingEnsemble:
             },
             "model_breakdown": breakdown,
         }
+
+    @staticmethod
+    def _get_squad_diffs_from_row(row: pd.Series) -> tuple[float, float]:
+        """Extract squad attack/defense diffs from a feature row if present."""
+        return (
+            float(row.get("squad_attack_rating_diff", 0.0)),
+            float(row.get("squad_defense_rating_diff", 0.0)),
+        )
+
+    def _ensure_dc_squad_weights(
+        self,
+        squad_attack_diff: float,
+        squad_defense_diff: float,
+    ) -> None:
+        """Use conservative DC squad weights when non-zero squad diffs are present."""
+        if abs(squad_attack_diff) < 1e-12 and abs(squad_defense_diff) < 1e-12:
+            return
+        if abs(getattr(self.dc_model_, "w_attack_", 0.0)) < 1e-8:
+            self.dc_model_.w_attack_ = 0.20
+        if abs(getattr(self.dc_model_, "w_defense_", 0.0)) < 1e-8:
+            self.dc_model_.w_defense_ = 0.12
 
     # ── Persistence ───────────────────────────────────────────────────────────
 

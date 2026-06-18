@@ -35,6 +35,10 @@ def save_simulation_results(results: dict, output_dir: Path) -> None:
     results["final_positions"].to_csv(output_dir / "final_positions.csv", index=False)
     results["team_progress"].to_csv(output_dir / "team_progress.csv", index=False)
     results["golden_boot"].to_csv(output_dir / "golden_boot.csv", index=False)
+    if "simulation_diagnostics" in results:
+        results["simulation_diagnostics"].to_csv(
+            output_dir / "simulation_diagnostics.csv", index=False
+        )
 
     logger.info(f"Saved simulation results → {output_dir}/")
 

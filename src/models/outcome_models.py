@@ -8,15 +8,30 @@ Every model:
   - outputs a (n, 3) probability matrix [P(HW), P(D), P(AW)]
   - is independently trainable and evaluable
 
-FEATURE_COLS (8 features):
-    elo_diff                  — home Elo minus away Elo (captures long-run quality)
-    rank_diff                 — away rank minus home rank (positive = home ranked better)
-    form_points_diff          — recent form gap (exponentially weighted)
-    form_goals_scored_diff    — recent attacking threat gap
-    form_goals_conceded_diff  — recent defensive solidity gap
-    is_neutral                — 1 if played on neutral ground
-    year                      — calendar year (captures era effects)
-    month                     — month of year (captures international window effects)
+FEATURE_COLS (14 features):
+
+  Base Elo/form (8):
+    elo_diff                    — home Elo minus away Elo (long-run quality)
+    rank_diff                   — away rank minus home rank (positive = home better)
+    form_points_diff            — recent form gap (exponentially weighted)
+    form_goals_scored_diff      — recent attacking threat gap
+    form_goals_conceded_diff    — recent defensive solidity gap
+    is_neutral                  — 1 if played on neutral ground
+    year                        — calendar year (era effects)
+    month                       — month of year (international window effects)
+
+  Squad features (6, all as home - away differences):
+    squad_attack_rating_diff    — forward goal threat gap
+    squad_defense_rating_diff   — defensive quality gap
+    squad_depth_rating_diff     — squad depth gap (bench strength)
+    squad_experience_rating_diff — international experience gap
+    squad_form_rating_diff      — recent club form gap
+    squad_age_balance_diff      — squad age distribution gap
+
+Squad feature diffs are 0.0 for historical training matches (no squad CSV
+for past tournaments), and carry real signal once wc2026_squads.csv is loaded.
+This means the model is pre-trained on history and the squad features ADD
+marginal uplift at prediction time — they don't dominate training signal.
 """
 
 from pathlib import Path
@@ -37,7 +52,9 @@ from sklearn.preprocessing import StandardScaler
 from src.models.base import BaseOutcomeModel
 
 # ── Feature columns consumed by sklearn-based models ─────────────────────────
-FEATURE_COLS: list[str] = [
+
+# Base features (always present, computed from historical match data)
+_BASE_FEATURE_COLS: list[str] = [
     "elo_diff",
     "rank_diff",
     "form_points_diff",
@@ -47,6 +64,44 @@ FEATURE_COLS: list[str] = [
     "year",
     "month",
 ]
+
+# Squad features (present when wc2026_squads.csv exists; zero-filled otherwise)
+_SQUAD_FEATURE_COLS: list[str] = [
+    "squad_attack_rating_diff",
+    "squad_defense_rating_diff",
+    "squad_depth_rating_diff",
+    "squad_experience_rating_diff",
+    "squad_form_rating_diff",
+    "squad_age_balance_diff",
+]
+
+# Full feature set used by all models
+FEATURE_COLS: list[str] = _BASE_FEATURE_COLS + _SQUAD_FEATURE_COLS
+
+
+def get_available_feature_cols(df: pd.DataFrame) -> list[str]:
+    """
+    Return the subset of FEATURE_COLS present in df.
+
+    This allows models to work correctly whether or not squad features
+    are in the DataFrame, avoiding KeyError on missing columns.
+    Squad feature columns missing from df are implicitly 0.0.
+    """
+    return [c for c in FEATURE_COLS if c in df.columns]
+
+
+def prepare_feature_matrix(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Return a DataFrame with all FEATURE_COLS, filling missing squad columns with 0.0.
+
+    This ensures every model always receives a consistent 14-column matrix,
+    even when squad data isn't available yet.
+    """
+    out = df.copy()
+    for col in FEATURE_COLS:
+        if col not in out.columns:
+            out[col] = 0.0
+    return out[FEATURE_COLS]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -59,9 +114,6 @@ class EloOutcomeModel(BaseOutcomeModel):
 
     This is the honest baseline. If a complex model can't beat this,
     it's overfitting — all those extra features are adding noise, not signal.
-
-    FiveThirtyEight's Club Soccer Predictions use exactly this principle:
-    one carefully-constructed strength number → win probability.
     """
 
     name = "elo_model"
@@ -99,14 +151,12 @@ class XGBoostOutcomeModel(BaseOutcomeModel):
     """
     Gradient boosting outcome classifier with SHAP explainability.
 
-    XGBoost is the workhorse of the ensemble. It builds 300 decision trees
-    sequentially, each tree correcting the errors of the previous one.
-
-    This captures interactions Elo alone can't: form matters more when
-    Elo difference is small; ranking matters more in competitive tournaments.
-
-    After fitting, a TreeExplainer is built so SHAP values can be computed
-    for any prediction — telling you exactly which feature drove each result.
+    Trained on all 14 features. The squad features will have near-zero
+    importance during training (all zeros in historical data) but their
+    weights in the trained model will still respond correctly to non-zero
+    squad feature diffs at prediction time — because XGBoost learns split
+    thresholds, and a threshold at 0.0 means "squad data present" triggers
+    the squad-aware branch automatically.
     """
 
     name = "xgboost"
@@ -115,6 +165,7 @@ class XGBoostOutcomeModel(BaseOutcomeModel):
         self.config = config
         self.model_: Optional[xgb.XGBClassifier] = None
         self.explainer_: Optional[shap.TreeExplainer] = None
+        self._fitted_feature_cols: list[str] = []
 
     def fit(
         self,
@@ -124,6 +175,8 @@ class XGBoostOutcomeModel(BaseOutcomeModel):
         **kwargs,
     ) -> "XGBoostOutcomeModel":
         cfg = self.config["models"]["xgboost"]
+        X_prepared = prepare_feature_matrix(X)
+        self._fitted_feature_cols = list(X_prepared.columns)
 
         self.model_ = xgb.XGBClassifier(
             n_estimators      = cfg["n_estimators"],
@@ -146,12 +199,11 @@ class XGBoostOutcomeModel(BaseOutcomeModel):
         fit_kwargs: dict = {}
         if eval_set:
             X_val, y_val = eval_set[0]
-            fit_kwargs["eval_set"] = [(X_val[FEATURE_COLS].values, y_val)]
+            X_val_prepared = prepare_feature_matrix(X_val)
+            fit_kwargs["eval_set"] = [(X_val_prepared.values, y_val)]
             fit_kwargs["verbose"] = False
 
-        self.model_.fit(X[FEATURE_COLS].values, y, **fit_kwargs)
-
-        # Build SHAP explainer immediately — TreeExplainer is fast and exact
+        self.model_.fit(X_prepared.values, y, **fit_kwargs)
         self.explainer_ = shap.TreeExplainer(self.model_)
 
         best_iter = getattr(self.model_, "best_iteration", cfg["n_estimators"])
@@ -159,27 +211,20 @@ class XGBoostOutcomeModel(BaseOutcomeModel):
         return self
 
     def predict_proba(self, X: pd.DataFrame) -> np.ndarray:
-        return self.model_.predict_proba(X[FEATURE_COLS].values)
+        return self.model_.predict_proba(prepare_feature_matrix(X).values)
 
     def compute_shap_values(self, X: pd.DataFrame) -> list[np.ndarray]:
-        """
-        Compute SHAP values for all three outcomes.
-
-        Returns:
-            List of three (n_samples, n_features) arrays,
-            one per outcome class [home win, draw, away win].
-            Use shap.summary_plot(values[0], X, feature_names=FEATURE_COLS)
-            to visualise.
-        """
+        """Return SHAP values for all three outcomes."""
         if self.explainer_ is None:
             raise RuntimeError(f"{self.name}: call fit() before compute_shap_values().")
-        return self.explainer_.shap_values(X[FEATURE_COLS].values)
+        return self.explainer_.shap_values(prepare_feature_matrix(X).values)
 
     def feature_importance_df(self) -> pd.DataFrame:
         """Return feature importances as a tidy DataFrame (gain-based)."""
+        cols = self._fitted_feature_cols if self._fitted_feature_cols else FEATURE_COLS
         return (
             pd.DataFrame({
-                "feature":    FEATURE_COLS,
+                "feature":    cols,
                 "importance": self.model_.feature_importances_,
             })
             .sort_values("importance", ascending=False)
@@ -195,13 +240,9 @@ class RandomForestOutcomeModel(BaseOutcomeModel):
     """
     Random Forest outcome classifier.
 
-    Builds trees independently (bagging), not sequentially like XGBoost.
-    This means it makes different kinds of errors — essential for
-    ensemble diversity. If XGBoost and RF disagree strongly on a match,
-    that's a signal the match is genuinely uncertain.
-
-    class_weight='balanced' accounts for the fact that home wins (~46%)
-    are more common than draws (~25%) or away wins (~29%).
+    Builds trees independently (bagging). Essential for ensemble diversity —
+    XGBoost and RF make different types of errors, so their combination
+    through the meta-learner is more robust than either alone.
     """
 
     name = "random_forest"
@@ -219,20 +260,23 @@ class RandomForestOutcomeModel(BaseOutcomeModel):
             n_jobs          = -1,
             class_weight    = "balanced",
         )
+        self._fitted_feature_cols: list[str] = []
 
     def fit(self, X: pd.DataFrame, y: np.ndarray, **kwargs) -> "RandomForestOutcomeModel":
-        self.model_.fit(X[FEATURE_COLS].values, y)
+        X_prepared = prepare_feature_matrix(X)
+        self._fitted_feature_cols = list(X_prepared.columns)
+        self.model_.fit(X_prepared.values, y)
         logger.info(f"  Fitted {self.name}")
         return self
 
     def predict_proba(self, X: pd.DataFrame) -> np.ndarray:
-        return self.model_.predict_proba(X[FEATURE_COLS].values)
+        return self.model_.predict_proba(prepare_feature_matrix(X).values)
 
     def feature_importance_df(self) -> pd.DataFrame:
-        """Return feature importances (mean decrease in impurity)."""
+        cols = self._fitted_feature_cols if self._fitted_feature_cols else FEATURE_COLS
         return (
             pd.DataFrame({
-                "feature":    FEATURE_COLS,
+                "feature":    cols,
                 "importance": self.model_.feature_importances_,
             })
             .sort_values("importance", ascending=False)
@@ -248,14 +292,9 @@ class LogisticOutcomeModel(BaseOutcomeModel):
     """
     Calibrated logistic regression — the probability calibration anchor.
 
-    CalibratedClassifierCV wraps the base logistic regression with
-    isotonic regression calibration fitted via cross-validation.
-
-    Why this matters: raw logistic regression and XGBoost both tend to
-    be over-confident. Calibration ensures that when the model says
-    '70% chance of a home win', teams actually win approximately 70%
-    of the time. Miscalibrated models produce incorrect expected values
-    in the simulation — a systematic error that compounds across 10,000 runs.
+    Isotonic calibration ensures that when the model says "70% home win",
+    teams actually win ~70% of the time. Miscalibration compounds across
+    10,000 Monte Carlo runs, so this is critical for simulation quality.
     """
 
     name = "logistic"
@@ -271,9 +310,6 @@ class LogisticOutcomeModel(BaseOutcomeModel):
             random_state = config["models"]["random_state"],
         )
 
-        # Isotonic calibration is non-parametric and more powerful than Platt
-        # scaling (sigmoid) when there's enough data (>1000 samples).
-        # cv=5: calibration itself is cross-validated to avoid leakage.
         calibrated_clf = CalibratedClassifierCV(
             estimator = base_clf,
             method    = "isotonic",
@@ -286,9 +322,9 @@ class LogisticOutcomeModel(BaseOutcomeModel):
         ])
 
     def fit(self, X: pd.DataFrame, y: np.ndarray, **kwargs) -> "LogisticOutcomeModel":
-        self.model_.fit(X[FEATURE_COLS].values, y)
+        self.model_.fit(prepare_feature_matrix(X).values, y)
         logger.info(f"  Fitted {self.name}")
         return self
 
     def predict_proba(self, X: pd.DataFrame) -> np.ndarray:
-        return self.model_.predict_proba(X[FEATURE_COLS].values)
+        return self.model_.predict_proba(prepare_feature_matrix(X).values)

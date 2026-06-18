@@ -18,6 +18,8 @@ from pathlib import Path
 import pandas as pd
 from loguru import logger
 
+from src.data.squads import load_squad_data
+from src.features.squad_features import compute_squad_features
 from src.models.dixon_coles import DixonColesModel
 from src.simulation.player_models import PlayerScoringModel
 from src.simulation.results_aggregator import (
@@ -69,6 +71,10 @@ def run_simulation(config: dict) -> dict:
     # ── Load qualified teams ──────────────────────────────────────────────────
     team_names = load_team_names(config)
     logger.info(f"Loaded {len(team_names)} teams for simulation")
+    logger.warning(
+        "Using wc2026_groups.csv as the tournament draw. If this is placeholder "
+        "seeding, champion probabilities can be heavily shaped by group/bracket path."
+    )
 
     # Warn about any teams missing from the Dixon-Coles model
     missing = [t for t in team_names if not dc_model.has_team(t)]
@@ -79,10 +85,33 @@ def run_simulation(config: dict) -> dict:
         )
 
     # ── Player model (placeholder until squad data is collected) ────────────
-    player_model = PlayerScoringModel.placeholder(team_names)
+    min_appearances = config.get("data", {}).get("players", {}).get(
+        "min_appearances_for_rate", 5
+    )
+    squads_df = load_squad_data(
+        Path(config["paths"]["external_data"]),
+        required_teams=team_names,
+        strict=False,
+    )
+    squad_features = None
+    if squads_df is not None:
+        player_model = PlayerScoringModel.from_squad_data(
+            squads_df, min_appearances=min_appearances
+        )
+        squad_features = compute_squad_features(
+            squads_df, min_appearances=min_appearances
+        )
+    else:
+        logger.warning(
+            "Running with placeholder player model because no squad CSV was found. "
+            "Golden Boot results will use generic players."
+        )
+        player_model = PlayerScoringModel.placeholder(team_names)
 
     # ── Run simulation ─────────────────────────────────────────────────────────
-    simulator = TournamentSimulator(config, dc_model, team_names, player_model)
+    simulator = TournamentSimulator(
+        config, dc_model, team_names, player_model, squad_features=squad_features
+    )
     results = simulator.run_monte_carlo()
 
     # ── Save + summarise ──────────────────────────────────────────────────────

@@ -155,6 +155,33 @@ class TestMatchSimulator:
         assert result.scorers == []
         assert result.yellow_cards == []
 
+    def test_squad_diffs_passed_to_dixon_coles(self, dc_model, player_model):
+        squad_features = pd.DataFrame({
+            "team": ["Team00", "Team01"],
+            "squad_attack_rating": [0.9, 0.2],
+            "squad_defense_rating": [0.8, 0.3],
+        })
+        calls = []
+        original = dc_model.sample_scoreline
+
+        def capture(*args, **kwargs):
+            calls.append(kwargs)
+            return original(*args, **kwargs)
+
+        dc_model.sample_scoreline = capture
+        sim = MatchSimulator(dc_model, player_model, squad_features=squad_features)
+        sim.simulate(
+            "Team00",
+            "Team01",
+            is_neutral=True,
+            is_knockout=False,
+            rng=np.random.default_rng(7),
+        )
+
+        assert calls
+        assert calls[0]["squad_attack_diff"] == pytest.approx(0.7)
+        assert calls[0]["squad_defense_diff"] == pytest.approx(0.5)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PlayerScoringModel
@@ -193,6 +220,17 @@ class TestPlayerScoringModel:
         # A1 has higher goal rate than A2 (which falls back to 0.05)
         weights = dict(zip(model.team_players["A"], model.team_weights["A"]))
         assert weights["A1"] > weights["A2"]
+
+    def test_player_team_lookup_for_real_players(self):
+        squads = pd.DataFrame({
+            "team": ["A", "A"],
+            "player": ["Real Star", "Real Mid"],
+            "position": ["FW", "MF"],
+            "career_goals": [10, 1],
+            "career_appearances": [20, 20],
+        })
+        model = PlayerScoringModel.from_squad_data(squads, min_appearances=5)
+        assert model.get_player_team("Real Star") == "A"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -333,6 +371,22 @@ class TestTournamentSimulator:
         sim = TournamentSimulator(minimal_config, dc_model, team_names, player_model)
         results = sim.run_monte_carlo(n_simulations=5)
         assert (results["golden_boot"]["mean_goals"] >= 0).all()
+
+    def test_golden_boot_uses_player_team_lookup(self, minimal_config, dc_model, team_names):
+        squads = pd.DataFrame({
+            "team": team_names,
+            "player": [f"{team} Star" for team in team_names],
+            "position": ["FW"] * len(team_names),
+            "career_goals": [10] * len(team_names),
+            "career_appearances": [20] * len(team_names),
+        })
+        model = PlayerScoringModel.from_squad_data(squads, min_appearances=5)
+        sim = TournamentSimulator(minimal_config, dc_model, team_names, model)
+        results = sim.run_monte_carlo(n_simulations=3)
+
+        assert not results["golden_boot"].empty
+        assert (results["golden_boot"]["team"] != "Unknown").all()
+        assert not results["golden_boot"]["player"].str.contains(" Player ").any()
 
     def test_team_progress_monotonically_decreasing(self, minimal_config, dc_model, team_names, player_model):
         """A team can't reach the final without reaching the semifinal, etc."""

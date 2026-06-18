@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 import numpy as np
+import pandas as pd
 from loguru import logger
 
 from src.models.dixon_coles import DixonColesModel
@@ -103,13 +104,20 @@ class MatchSimulator:
         self,
         dc_model: DixonColesModel,
         player_model: Optional[PlayerScoringModel] = None,
+        squad_features: Optional[pd.DataFrame] = None,
         et_goal_rate: float = 0.75,
         pen_base_success: float = 0.753,
+        fallback_squad_attack_weight: float = 0.20,
+        fallback_squad_defense_weight: float = 0.12,
     ):
         self.dc_model = dc_model
         self.player_model = player_model
+        self.squad_strengths = self._build_squad_strength_lookup(squad_features)
         self.et_goal_rate = et_goal_rate
         self.pen_base_success = pen_base_success
+        self._activate_fallback_squad_weights(
+            fallback_squad_attack_weight, fallback_squad_defense_weight
+        )
 
     # ── Public: full match simulation ─────────────────────────────────────────
 
@@ -213,11 +221,28 @@ class MatchSimulator:
         Returns:
             (home_goals, away_goals)
         """
+        squad_attack_diff, squad_defense_diff = self._get_squad_diffs(
+            home_team, away_team
+        )
+
         if time_fraction == 1.0:
-            return self.dc_model.sample_scoreline(home_team, away_team, is_neutral, rng)
+            return self.dc_model.sample_scoreline(
+                home_team,
+                away_team,
+                is_neutral,
+                rng,
+                squad_attack_diff=squad_attack_diff,
+                squad_defense_diff=squad_defense_diff,
+            )
 
         # For extra time, build a scaled-down scoreline matrix
-        matrix = self.dc_model.predict_scoreline_matrix(home_team, away_team, is_neutral)
+        matrix = self.dc_model.predict_scoreline_matrix(
+            home_team,
+            away_team,
+            is_neutral,
+            squad_attack_diff=squad_attack_diff,
+            squad_defense_diff=squad_defense_diff,
+        )
         scaled_matrix = self._scale_scoreline_matrix(matrix, time_fraction)
 
         flat = scaled_matrix.flatten()
@@ -394,3 +419,50 @@ class MatchSimulator:
                 player = self.player_model.sample_scorer(team, rng)
                 cards.append((team, player))
         return cards
+
+    @staticmethod
+    def _build_squad_strength_lookup(
+        squad_features: Optional[pd.DataFrame],
+    ) -> dict[str, tuple[float, float]]:
+        """Build team -> (attack_rating, defense_rating) lookup."""
+        if squad_features is None or squad_features.empty:
+            return {}
+
+        required = {"team", "squad_attack_rating", "squad_defense_rating"}
+        if not required.issubset(squad_features.columns):
+            missing = required - set(squad_features.columns)
+            logger.warning(f"Squad features missing columns {missing}; using neutral diffs")
+            return {}
+
+        lookup = {}
+        for _, row in squad_features.iterrows():
+            lookup[str(row["team"])] = (
+                float(row["squad_attack_rating"]),
+                float(row["squad_defense_rating"]),
+            )
+        return lookup
+
+    def _get_squad_diffs(self, home_team: str, away_team: str) -> tuple[float, float]:
+        """Return home-away squad attack and defense rating differences."""
+        home = self.squad_strengths.get(home_team, (0.5, 0.5))
+        away = self.squad_strengths.get(away_team, (0.5, 0.5))
+        return home[0] - away[0], home[1] - away[1]
+
+    def _activate_fallback_squad_weights(
+        self,
+        attack_weight: float,
+        defense_weight: float,
+    ) -> None:
+        """
+        Give squad diffs a conservative effect when the saved DC model learned none.
+
+        Historical training rows usually have zero squad diffs, so the fitted
+        squad weights can remain at zero. In tournament simulation, non-zero
+        2026 squad ratings should still nudge expected goals modestly.
+        """
+        if not self.squad_strengths:
+            return
+        if abs(getattr(self.dc_model, "w_attack_", 0.0)) < 1e-8:
+            self.dc_model.w_attack_ = attack_weight
+        if abs(getattr(self.dc_model, "w_defense_", 0.0)) < 1e-8:
+            self.dc_model.w_defense_ = defense_weight

@@ -12,6 +12,7 @@ import pytest
 
 from src.data.team_names import normalize_team_name
 from src.data.preprocess import classify_tournament, clean_results
+from src.data.squads import load_squad_data
 from src.features.elo import EloEngine
 from src.features.form import compute_form_features
 
@@ -81,6 +82,28 @@ class TestNormalizeTeamName:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+class TestSquadLoading:
+
+    def test_loads_raw_schema_and_canonicalizes_teams(self, tmp_path):
+        raw_dir = tmp_path / "raw"
+        raw_dir.mkdir()
+        pd.DataFrame({
+            "team": ["Czech Republic", "Curaçao"],
+            "player": ["Player A", "Player B"],
+            "position": ["FW", "MF"],
+            "caps": [10, 20],
+            "goals": [5, 2],
+        }).to_csv(raw_dir / "wc2026_squads.csv", index=False)
+
+        squads = load_squad_data(tmp_path, required_teams=["Czechia", "Curacao"])
+
+        assert squads is not None
+        assert set(squads["team"]) == {"Czechia", "Curacao"}
+        assert "career_appearances" in squads.columns
+        assert "career_goals" in squads.columns
+        assert squads.loc[squads["player"] == "Player A", "career_goals"].iloc[0] == 5
+
+
 # Tournament classification
 # ─────────────────────────────────────────────────────────────────────────────
 

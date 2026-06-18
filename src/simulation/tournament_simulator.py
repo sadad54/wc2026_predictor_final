@@ -52,6 +52,7 @@ class TournamentSimulator:
         dc_model: DixonColesModel,
         team_names: list[str],
         player_model: PlayerScoringModel | None = None,
+        squad_features: pd.DataFrame | None = None,
     ):
         """
         Args:
@@ -65,6 +66,7 @@ class TournamentSimulator:
         self.config = config
         self.dc_model = dc_model
         self.team_names = team_names
+        self.squad_features = squad_features
 
         if player_model is None:
             player_model = PlayerScoringModel.placeholder(team_names)
@@ -75,6 +77,7 @@ class TournamentSimulator:
         self.match_sim = MatchSimulator(
             dc_model=dc_model,
             player_model=player_model,
+            squad_features=squad_features,
             et_goal_rate=et_rate,
             pen_base_success=pen_rate,
         )
@@ -306,7 +309,7 @@ class TournamentSimulator:
                     at_least_5_goals[player] += 1
                 # Record player's team if not already known
                 if player not in player_team:
-                    player_team[player] = self._infer_team_from_player_name(player)
+                    player_team[player] = self.player_model.get_player_team(player)
 
             if top_scorers:
                 top_player = max(top_scorers.items(), key=lambda kv: kv[1])[0]
@@ -386,6 +389,7 @@ class TournamentSimulator:
             "final_positions": final_positions,
             "team_progress": team_progress,
             "golden_boot": golden_boot,
+            "simulation_diagnostics": self._build_diagnostics(final_positions),
         }
 
     @staticmethod
@@ -401,3 +405,44 @@ class TournamentSimulator:
         if " Player " in player:
             return player.split(" Player ")[0]
         return "Unknown"
+
+    def _build_diagnostics(self, final_positions: pd.DataFrame) -> pd.DataFrame:
+        """Build per-team context explaining title probabilities."""
+        diagnostics = final_positions[["team", "p_champion"]].copy()
+        diagnostics["champion_rank"] = (
+            diagnostics["p_champion"].rank(ascending=False, method="min").astype(int)
+        )
+
+        if hasattr(self.dc_model, "get_team_strengths"):
+            strengths = self.dc_model.get_team_strengths()
+            strengths["dc_strength_rank"] = (
+                strengths["net_strength"].rank(ascending=False, method="min").astype(int)
+            )
+            diagnostics = diagnostics.merge(
+                strengths[["team", "net_strength", "dc_strength_rank"]],
+                on="team",
+                how="left",
+            )
+
+        team_group = {}
+        for group in self.format.groups:
+            for seed, team in enumerate(group.teams, start=1):
+                team_group[team] = {"group": group.name, "group_seed": seed}
+        group_df = pd.DataFrame(
+            [{"team": team, **values} for team, values in team_group.items()]
+        )
+        diagnostics = diagnostics.merge(group_df, on="team", how="left")
+
+        if self.squad_features is not None and not self.squad_features.empty:
+            cols = [
+                "team",
+                "squad_attack_rating",
+                "squad_defense_rating",
+                "squad_depth_rating",
+            ]
+            present_cols = [c for c in cols if c in self.squad_features.columns]
+            diagnostics = diagnostics.merge(
+                self.squad_features[present_cols], on="team", how="left"
+            )
+
+        return diagnostics.sort_values("champion_rank").reset_index(drop=True)
